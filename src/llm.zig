@@ -66,6 +66,99 @@ pub const ModelResponse = struct {
     data: []Model,
 };
 
+// Embeddings types
+pub const Embedding = struct {
+    object: []const u8,
+    embedding: []f64,
+    index: usize,
+};
+
+pub const EmbeddingUsage = struct {
+    prompt_tokens: u64,
+    total_tokens: u64,
+};
+
+pub const EmbeddingResponse = struct {
+    object: []const u8,
+    data: []Embedding,
+    model: []const u8,
+    usage: EmbeddingUsage,
+};
+
+pub const EmbeddingPayload = struct {
+    model: []const u8,
+    input: []const u8,
+    dimensions: ?u32 = null,
+};
+
+// Moderation types
+pub const ModerationCategories = struct {
+    hate: bool,
+    @"hate/threatening": bool,
+    harassment: bool,
+    @"harassment/threatening": bool,
+    @"self-harm": bool,
+    @"self-harm/intent": bool,
+    @"self-harm/instructions": bool,
+    sexual: bool,
+    @"sexual/minors": bool,
+    violence: bool,
+    @"violence/graphic": bool,
+};
+
+pub const ModerationCategoryScores = struct {
+    hate: f64,
+    @"hate/threatening": f64,
+    harassment: f64,
+    @"harassment/threatening": f64,
+    @"self-harm": f64,
+    @"self-harm/intent": f64,
+    @"self-harm/instructions": f64,
+    sexual: f64,
+    @"sexual/minors": f64,
+    violence: f64,
+    @"violence/graphic": f64,
+};
+
+pub const ModerationResult = struct {
+    flagged: bool,
+    categories: ModerationCategories,
+    category_scores: ModerationCategoryScores,
+};
+
+pub const ModerationResponse = struct {
+    id: []const u8,
+    model: []const u8,
+    results: []ModerationResult,
+};
+
+pub const ModerationPayload = struct {
+    input: []const u8,
+    model: ?[]const u8 = null,
+};
+
+// Image generation types
+pub const ImageData = struct {
+    url: ?[]const u8 = null,
+    b64_json: ?[]const u8 = null,
+    revised_prompt: ?[]const u8 = null,
+};
+
+pub const ImageResponse = struct {
+    created: u64,
+    data: []ImageData,
+};
+
+pub const ImagePayload = struct {
+    prompt: []const u8,
+    model: ?[]const u8 = null,
+    n: ?u32 = null,
+    size: ?[]const u8 = null,
+    quality: ?[]const u8 = null,
+    response_format: ?[]const u8 = null,
+    style: ?[]const u8 = null,
+};
+
 const StreamReader = struct {
     arena: std.heap.ArenaAllocator,
     request: std.http.Client.Request,
@@ -175,6 +268,26 @@ pub const Client = struct {
         return headers;
     }
 
+    fn makeRequest(self: *Client, method: std.http.Method, endpoint: []const u8) !std.http.Client.Request {
+        const headers = try get_headers(self.allocator, self.api_key);
+        defer self.allocator.free(headers.authorization.override);
+
+        var buf: [16 * 1024]u8 = undefined;
+
+        const path = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.base_url, endpoint });
+        defer self.allocator.free(path);
+        const uri = try std.Uri.parse(path);
+
+        var req = try self.http_client.open(method, uri, .{ .headers = headers, .server_header_buffer = &buf });
+        errdefer req.deinit();
+
+        try req.send();
+        try req.finish();
+        try req.wait();
+
+        return req;
+    }
+
     fn makeCall(self: *Client, endpoint: []const u8, body: []const u8, _: bool) !std.http.Client.Request {
         const headers = try get_headers(self.allocator, self.api_key);
         defer self.allocator.free(headers.authorization.override);
@@ -239,15 +352,110 @@ pub const Client = struct {
         defer req.deinit();
 
         if (req.response.status != .ok) {
-            const err = getError(req.response.status);
-            req.deinit();
-            return err;
+            return getError(req.response.status);
         }
 
         const response = try req.reader().readAllAlloc(self.allocator, 1024 * 8);
         defer self.allocator.free(response);
 
         const parsed = try std.json.parseFromSlice(ChatResponse, self.allocator, response, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+
+        return parsed;
+    }
+
+    /// Lists the currently available models.
+    pub fn listModels(self: *Client) !std.json.Parsed(ModelResponse) {
+        var req = try self.makeRequest(.GET, "/models");
+        defer req.deinit();
+
+        if (req.response.status != .ok) {
+            return getError(req.response.status);
+        }
+
+        const response = try req.reader().readAllAlloc(self.allocator, 1024 * 64);
+        defer self.allocator.free(response);
+
+        const parsed = try std.json.parseFromSlice(ModelResponse, self.allocator, response, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+
+        return parsed;
+    }
+
+    /// Retrieves a model instance by its ID.
+    pub fn retrieveModel(self: *Client, model_id: []const u8) !std.json.Parsed(Model) {
+        const endpoint = try std.fmt.allocPrint(self.allocator, "/models/{s}", .{model_id});
+        defer self.allocator.free(endpoint);
+
+        var req = try self.makeRequest(.GET, endpoint);
+        defer req.deinit();
+
+        if (req.response.status != .ok) {
+            return getError(req.response.status);
+        }
+
+        const response = try req.reader().readAllAlloc(self.allocator, 1024 * 8);
+        defer self.allocator.free(response);
+
+        const parsed = try std.json.parseFromSlice(Model, self.allocator, response, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+
+        return parsed;
+    }
+
+    /// Creates an embedding vector representing the input text.
+    pub fn createEmbedding(self: *Client, payload: EmbeddingPayload) !std.json.Parsed(EmbeddingResponse) {
+        const body = try std.json.stringifyAlloc(self.allocator, payload, .{});
+        defer self.allocator.free(body);
+
+        var req = try self.makeCall("/embeddings", body, false);
+        defer req.deinit();
+
+        if (req.response.status != .ok) {
+            return getError(req.response.status);
+        }
+
+        const response = try req.reader().readAllAlloc(self.allocator, 1024 * 64);
+        defer self.allocator.free(response);
+
+        const parsed = try std.json.parseFromSlice(EmbeddingResponse, self.allocator, response, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+
+        return parsed;
+    }
+
+    /// Classifies if the input text is potentially harmful.
+    pub fn createModeration(self: *Client, payload: ModerationPayload) !std.json.Parsed(ModerationResponse) {
+        const body = try std.json.stringifyAlloc(self.allocator, payload, .{});
+        defer self.allocator.free(body);
+
+        var req = try self.makeCall("/moderations", body, false);
+        defer req.deinit();
+
+        if (req.response.status != .ok) {
+            return getError(req.response.status);
+        }
+
+        const response = try req.reader().readAllAlloc(self.allocator, 1024 * 16);
+        defer self.allocator.free(response);
+
+        const parsed = try std.json.parseFromSlice(ModerationResponse, self.allocator, response, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
+
+        return parsed;
+    }
+
+    /// Creates an image given a prompt.
+    pub fn createImage(self: *Client, payload: ImagePayload) !std.json.Parsed(ImageResponse) {
+        const body = try std.json.stringifyAlloc(self.allocator, payload, .{});
+        defer self.allocator.free(body);
+
+        var req = try self.makeCall("/images/generations", body, false);
+        defer req.deinit();
+
+        if (req.response.status != .ok) {
+            return getError(req.response.status);
+        }
+
+        const response = try req.reader().readAllAlloc(self.allocator, 1024 * 256);
+        defer self.allocator.free(response);
+
+        const parsed = try std.json.parseFromSlice(ImageResponse, self.allocator, response, .{ .ignore_unknown_fields = true, .allocate = .alloc_always });
 
         return parsed;
     }

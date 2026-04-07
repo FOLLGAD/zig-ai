@@ -74,6 +74,65 @@ pub fn build(b: *std.Build) void {
 }
 ```
 
-## Usage
+## API Reference
 
-See the `examples` directory for usage examples.
+### Chat Completions
+
+```zig
+// Non-streaming
+const result = try openai.chat(payload, false);
+defer result.deinit();
+
+// Streaming
+var stream = try openai.streamChat(payload, false);
+defer stream.deinit();
+while (try stream.next()) |response| { ... }
+```
+
+### Embeddings
+
+```zig
+const result = try openai.createEmbedding(.{
+    .model = "text-embedding-3-small",
+    .input = "The quick brown fox",
+});
+defer result.deinit();
+const vector = result.value.data[0].embedding;
+```
+
+### Models
+
+```zig
+// List all models
+const models = try openai.listModels();
+defer models.deinit();
+
+// Retrieve a specific model
+const model = try openai.retrieveModel("gpt-4o");
+defer model.deinit();
+```
+
+### Moderations
+
+```zig
+const result = try openai.createModeration(.{
+    .input = "Some text to check",
+});
+defer result.deinit();
+const flagged = result.value.results[0].flagged;
+```
+
+### Image Generation
+
+```zig
+const result = try openai.createImage(.{
+    .prompt = "A white siamese cat",
+    .model = "dall-e-3",
+    .n = 1,
+    .size = "1024x1024",
+});
+defer result.deinit();
+const url = result.value.data[0].url;
+```
+
+See the `examples` directory for more usage examples.
